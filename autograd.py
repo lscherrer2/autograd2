@@ -6,6 +6,7 @@ class Tensor:
 
     data: np.ndarray
     grad: np.ndarray
+    grad_delta: np.ndarray
     grad_fn: Optional['GradFn']
     
     def __init__ (self, data: np.ndarray, grad_fn: Optional['GradFn'] = None):
@@ -15,13 +16,17 @@ class Tensor:
         self.data = data
         self.grad_fn = grad_fn
         self.grad = np.zeros_like(data)
+        self.grad_delta = np.zeros_like(data)
 
     def backward (self) -> None:
-        self.grad = np.ones_like(self.data)
+        self.grad_delta = np.ones_like(self.data)
         backward_fns = cgraph_bfs(self)
         for grad_fn in backward_fns:
             grad_fn.backward()
         return None
+    
+    def update_grad (self) -> None:
+        self.grad += self.grad_delta
     
     def shape (self) -> tuple[int, ...]:
         return self.data.shape
@@ -221,10 +226,14 @@ class GradFn:
         self.creators = list(args)
 
     def backward (self) -> None:
-        assert isinstance(self.result.grad, np.ndarray), "result must have a gradient"
+        assert isinstance(self.result.grad, np.ndarray) and isinstance(self.result.grad_delta, np.ndarray), "result must have a gradient"
 
     def _check_numeric_types (self, other: Any) -> None:
         assert isinstance(other, (int, float, np.number)), "other must be a number"
+
+    def update_grad (self) -> None:
+        for creator in self.creators:
+            creator.update_grad()
 
 class MSE_Loss_fn (GradFn):
 
@@ -247,8 +256,10 @@ class MSE_Loss_fn (GradFn):
         super().backward()
         assert np.prod(self.result.shape()) == 1, "result must have no more than one element"
 
-        self.y_pred.grad += self.result.grad.reshape(-1)[0] * 2 * (self.y_pred.data - self.y_true.data) / self.num_elements
-        self.y_true.grad += self.result.grad.reshape(-1)[0] * 2 * (self.y_true.data - self.y_pred.data) / self.num_elements
+        self.y_pred.grad_delta = self.result.grad_delta.reshape(-1)[0] * 2 * (self.y_pred.data - self.y_true.data) / self.num_elements
+        self.y_true.grad_delta = self.result.grad_delta.reshape(-1)[0] * 2 * (self.y_true.data - self.y_pred.data) / self.num_elements
+
+        self.update_grad()
 
 class Add_fn (GradFn):
 
@@ -265,8 +276,10 @@ class Add_fn (GradFn):
     def backward (self) -> None:
         super().backward()
 
-        self.a.grad += self.result.grad
-        self.b.grad += self.result.grad
+        self.a.grad_delta = self.result.grad_delta
+        self.b.grad_delta = self.result.grad_delta
+
+        self.update_grad()
     
 class Sub_fn (GradFn):
 
@@ -283,8 +296,10 @@ class Sub_fn (GradFn):
     def backward (self) -> None:
         super().backward()
 
-        self.a.grad += self.result.grad
-        self.b.grad -= self.result.grad
+        self.a.grad_delta = self.result.grad_delta
+        self.b.grad_delta = self.result.grad_delta
+
+        self.update_grad()
 
 class Mul_fn (GradFn):
 
@@ -301,8 +316,10 @@ class Mul_fn (GradFn):
     def backward (self) -> None:
         super().backward()
 
-        self.a.grad += self.result.grad * self.b.data
-        self.b.grad += self.result.grad * self.a.data
+        self.a.grad_delta = self.result.grad_delta * self.b.data
+        self.b.grad_delta = self.result.grad_delta * self.a.data
+
+        self.update_grad()
 
 class Div_fn (GradFn):
 
@@ -319,8 +336,10 @@ class Div_fn (GradFn):
     def backward (self) -> None:
         super().backward()
 
-        self.a.grad += self.result.grad / self.b.data
-        self.b.grad -= self.result.grad * self.a.data / (self.b.data**2)
+        self.a.grad_delta = self.result.grad_delta / self.b.data
+        self.b.grad_delta = -self.result.grad_delta * self.a.data / (self.b.data**2)
+        
+        self.update_grad()
 
 class Add_Scalar_fn (GradFn):
 
@@ -336,7 +355,9 @@ class Add_Scalar_fn (GradFn):
     def backward (self) -> None:
         super().backward()
 
-        self.a.grad += self.result.grad
+        self.a.grad_delta = self.result.grad_delta
+        
+        self.update_grad()
 
 class Sub_Scalar_fn (GradFn):
 
@@ -352,7 +373,9 @@ class Sub_Scalar_fn (GradFn):
     def backward (self) -> None:
         super().backward()
 
-        self.a.grad += self.result.grad
+        self.a.grad_delta = self.result.grad_delta
+        
+        self.update_grad()
 
 class Mul_Scalar_fn (GradFn):
     
@@ -368,7 +391,9 @@ class Mul_Scalar_fn (GradFn):
         def backward (self) -> None:
             super().backward()
     
-            self.a.grad += self.result.grad * self.b
+            self.a.grad_delta = self.result.grad_delta * self.b
+            
+            self.update_grad()
 
 class Div_Scalar_fn (GradFn):
 
@@ -385,7 +410,9 @@ class Div_Scalar_fn (GradFn):
     def backward (self) -> None:
         super().backward()
 
-        self.a.grad += self.result.grad / self.b
+        self.a.grad_delta = self.result.grad_delta / self.b
+        
+        self.update_grad()
 
 class Pow_fn (GradFn):
 
@@ -401,8 +428,10 @@ class Pow_fn (GradFn):
     def backward (self) -> None:
         super().backward()
 
-        self.a.grad += self.result.grad * self.b.data * (self.a.data ** (self.b.data - 1))
-        self.b.grad += self.result.grad * np.log(self.a.data) * self.result.data
+        self.a.grad_delta = self.result.grad_delta * self.b.data * (self.a.data ** (self.b.data - 1))
+        self.b.grad_delta = self.result.grad_delta * np.log(self.a.data) * self.result.data
+        
+        self.update_grad()
 
 class Pow_Scalar_fn (GradFn):
 
@@ -418,7 +447,9 @@ class Pow_Scalar_fn (GradFn):
     def backward (self) -> None:
         super().backward()
 
-        self.a.grad += self.result.grad * self.b * (self.a.data ** (self.b - 1))
+        self.a.grad_delta = self.result.grad_delta * self.b * (self.a.data ** (self.b - 1))
+        
+        self.update_grad()
 
 class Matmul_fn (GradFn):
     
@@ -437,8 +468,10 @@ class Matmul_fn (GradFn):
         def backward (self) -> None:
             super().backward()
     
-            self.a.grad += np.matmul(self.result.grad, self.b.data.T)
-            self.b.grad += np.matmul(self.a.data.T, self.result.grad)
+            self.a.grad_delta = np.matmul(self.result.grad_delta, self.b.data.T)
+            self.b.grad_delta = np.matmul(self.a.data.T, self.result.grad_delta)
+            
+            self.update_grad()
 
 class Reshape_fn (GradFn):
 
@@ -460,7 +493,9 @@ class Reshape_fn (GradFn):
     
     def backward (self) -> None:
         super().backward()
-        self.a.grad = self.result.grad.reshape(self.old_shape)
+        self.a.grad_delta = self.result.grad_delta.reshape(self.old_shape)
+        
+        self.update_grad()
     
     @classmethod
     def __call__ (cls, a: Tensor, shape: tuple[int, ...]) -> Tensor:
