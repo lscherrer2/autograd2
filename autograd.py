@@ -32,6 +32,11 @@ class Tensor:
     def acceptable_num_types (self) -> tuple[Type, ...]:
         return (self.dtype(), int, float, np.number)
 
+    def reshape (self, shape: tuple[int, ...]) -> 'Tensor':
+        assert isinstance(shape, tuple), "shape must be a tuple"
+        assert len(shape) > 0, "shape must have at least one dimension"
+
+        return Reshape_fn(self, shape).result
 
     def _check_types (self, other: Union['Tensor', Any]) -> None:
         assert isinstance(other, (Tensor, *self.acceptable_num_types())), "other must be a Tensor or of the same datatype"
@@ -414,3 +419,49 @@ class Pow_Scalar_fn (GradFn):
         super().backward()
 
         self.a.grad += self.result.grad * self.b * (self.a.data ** (self.b - 1))
+
+class Matmul_fn (GradFn):
+    
+        def __init__ (self, a: Tensor, b: Tensor) -> None:
+            assert isinstance(a, Tensor), "a must be a Tensor"
+            assert isinstance(b, Tensor), "b must be a Tensor"
+            assert len(a.shape()) == 2, "a must be a 2D Tensor"
+            assert len(b.shape()) == 2, "b must be a 2D Tensor"
+            assert a.shape()[1] == b.shape()[0], "Tensors must have compatible shapes for matrix multiplication"
+    
+            super().__init__(a, b)
+            self.a = a
+            self.b = b
+            self.result = Tensor(np.matmul(a.data, b.data), grad_fn=self)
+        
+        def backward (self) -> None:
+            super().backward()
+    
+            self.a.grad += np.matmul(self.result.grad, self.b.data.T)
+            self.b.grad += np.matmul(self.a.data.T, self.result.grad)
+
+class Reshape_fn (GradFn):
+
+    def __init__ (self, a: Tensor, shape: tuple[int, ...]) -> None:
+        assert isinstance(a, Tensor), "a must be a Tensor"
+        assert isinstance(shape, tuple), "shape must be a tuple"
+        assert len(shape) > 0, "shape must have at least one dimension"
+
+        self.old_shape = a.shape()
+        self.new_shape = shape
+
+        assert np.prod(self.old_shape) == np.prod(self.new_shape), "a and shape must have the same number of elements"
+
+        super().__init__(a)
+        self.a = a
+
+        self.shape = shape
+        self.result = Tensor(a.data.reshape(self.new_shape), grad_fn=self)
+    
+    def backward (self) -> None:
+        super().backward()
+        self.a.grad = self.result.grad.reshape(self.old_shape)
+    
+    @classmethod
+    def __call__ (cls, a: Tensor, shape: tuple[int, ...]) -> Tensor:
+        return cls(a, shape)
